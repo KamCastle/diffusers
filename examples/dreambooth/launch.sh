@@ -12,6 +12,7 @@ accelerate launch train_dreambooth.py \
   --train_batch_size=1 \
   --train_text_encoder \
   --mixed_precision="fp16" \
+  --shuffle_after_epoch \
   --use_8bit_adam \
   --gradient_accumulation_steps=1 \
   --learning_rate=1e-6 \
