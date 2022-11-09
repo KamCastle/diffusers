@@ -143,6 +143,11 @@ def parse_args(input_args=None):
         help="Whether or not to shuffle and recache training dataset after every epoch."
     )
     parser.add_argument(
+        "--use_smart_cross_products",
+        action="store_true",
+        help="Whether or not to use a smart loss-based cross product dataset for training."
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default="text-inversion-model",
@@ -288,6 +293,7 @@ class DreamBoothDataset(Dataset):
         class_img_prompt_tuples,
         tokenizer,
         with_prior_preservation=True,
+
         resolution=512,
         center_crop=False,
         pad_tokens=False,
@@ -321,7 +327,8 @@ class DreamBoothDataset(Dataset):
 
     def __getitem__(self, index):
         data_set_item = {}
-        instance_path, instance_prompt = self.inst_img_prompt_tuples[index % self.num_inst_images]
+        instance_path, instance_prompt = \
+            self.inst_img_prompt_tuples[index % self.num_inst_images]
 
         data_set_item["instance_images"] = self._transform_image(instance_path)
         data_set_item["instance_prompt_ids"] = \
@@ -398,9 +405,23 @@ class DreamBoothDataset(Dataset):
     #     return train_dataset, train_dataloader
 
 
+class SmartCrossProductDataSet(DreamBoothDataset):
+    def __init__(self,
+                 pairs: list[tuple[int, int]],
+                 loss_dict: dict[tuple[int, int], list[float]],
+                 *args):
+        self.pairs = pairs
+        self.loss_dict = loss_dict
+        super().__init__(*args)
+
+    def __getitem__(self, index):
+        pass
+
+
 class DreamBoothDataSetFactory:
     def __init__(
         self,
+        use_smart_cross_products,
         concepts_list,
         tokenizer,
         with_prior_preservation,
@@ -418,6 +439,7 @@ class DreamBoothDataSetFactory:
         self.class_img_prompt_tuples = []
         self.pad_tokens = pad_tokens
         self.hflip = hflip
+        self.use_smart_cross_products = use_smart_cross_products
 
         for concept in concepts_list:
             concept_inst_tuples = [(x, concept["instance_prompt"]) for x in Path(concept["instance_data_dir"]).iterdir() if x.is_file()]
@@ -427,23 +449,24 @@ class DreamBoothDataSetFactory:
                 concept_class_tuples = [(x, concept["class_prompt"]) for x in Path(concept["class_data_dir"]).iterdir() if x.is_file()]
                 self.class_img_prompt_tuples.extend(concept_class_tuples[:num_class_images])
 
-        self.pairs = self._build_cross_product_pairs()
-        # print(self.pairs)
-
-        self.loss_dict = {pair: [0] for pair in self.pairs}
-        print(self.loss_dict)
-
     def create(self) -> DreamBoothDataset:
-        return DreamBoothDataset(
-            self.inst_img_prompt_tuples,
-            self.class_img_prompt_tuples,
-            self.tokenizer,
-            self.with_prior_preservation,
-            self.resolution,
-            self.center_crop,
-            self.pad_tokens,
-            self.hflip
-        )
+        args = \
+            [
+                self.inst_img_prompt_tuples,
+                self.class_img_prompt_tuples,
+                self.tokenizer,
+                self.with_prior_preservation,
+                self.resolution,
+                self.center_crop,
+                self.pad_tokens,
+                self.hflip
+            ]
+        if self.use_smart_cross_products:
+            pairs = self._build_cross_product_pairs()
+            loss_dict = {pair: [0] for pair in self.pairs}
+            return SmartCrossProductDataSet(pairs, loss_dict, *args)
+        else:
+            return DreamBoothDataset(*args)
 
     def _build_cross_product_pairs(self) -> list[tuple[int, int]]:
         result = [(instance_index, class_index)
