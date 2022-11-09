@@ -1,4 +1,5 @@
 import argparse
+from enum import Enum, auto
 import hashlib
 import itertools
 import random
@@ -270,6 +271,11 @@ def parse_args(input_args=None):
     return args
 
 
+class ImageType(Enum):
+    CLASS = auto()
+    INSTANCE = auto()
+
+
 class DreamBoothDataset(Dataset):
     """
     A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
@@ -300,7 +306,7 @@ class DreamBoothDataset(Dataset):
         self.num_class_images = len(self.class_img_prompt_tuples)
         self._length = max(self.num_class_images, self.num_inst_images)
 
-        self.image_transforms = transforms.Compose(
+        self.image_transformer = transforms.Compose(
             [
                 transforms.RandomHorizontalFlip(0.5 * hflip),
                 transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
@@ -309,8 +315,6 @@ class DreamBoothDataset(Dataset):
                 transforms.Normalize([0.5], [0.5]),
             ]
         )
-
-        random.shuffle(self.inst_img_prompt_tuples)
 
     def __len__(self):
         return self._length
@@ -326,13 +330,11 @@ class DreamBoothDataset(Dataset):
         return result
 
     def __getitem__(self, index):
-        example = {}
+        data_set_item = {}
         instance_path, instance_prompt = self.inst_img_prompt_tuples[index % self.num_inst_images]
-        instance_image = Image.open(instance_path)
-        if not instance_image.mode == "RGB":
-            instance_image = instance_image.convert("RGB")
-        example["instance_images"] = self.image_transforms(instance_image)
-        example["instance_prompt_ids"] = self.tokenizer(
+
+        data_set_item["instance_images"] = self._transform_image(instance_path)
+        data_set_item["instance_prompt_ids"] = self.tokenizer(
             instance_prompt,
             padding="max_length" if self.pad_tokens else "do_not_pad",
             truncation=True,
@@ -342,18 +344,55 @@ class DreamBoothDataset(Dataset):
         if self.with_prior_preservation:
             class_path, class_prompt = self.class_img_prompt_tuples[
                 self._get_random_class_image_index()]
-            class_image = Image.open(class_path)
-            if not class_image.mode == "RGB":
-                class_image = class_image.convert("RGB")
-            example["class_images"] = self.image_transforms(class_image)
-            example["class_prompt_ids"] = self.tokenizer(
+
+            data_set_item["class_images"] = self._transform_image(class_path)
+            data_set_item["class_prompt_ids"] = self.tokenizer(
                 class_prompt,
                 padding="max_length" if self.pad_tokens else "do_not_pad",
                 truncation=True,
                 max_length=self.tokenizer.model_max_length,
             ).input_ids
 
-        return example
+        return data_set_item
+
+    def _transform_image(self, image_path: str) -> Any:
+        transformer = self.image_transformer
+
+        img = Image.open(image_path)
+        if not img.mode == 'RGB':
+            img = img.convert('RGB')
+
+        result = transformer(img)
+        img.close()
+
+        return result
+
+    # def _cache_latents(train_dataset: DreamBoothDataset,
+    #                   train_dataloader,
+    #                   vae
+    #                   ) -> Tuple[DreamBoothDataset, Any]:
+    #     latents_cache = []
+    #     text_encoder_cache = []
+    #     for batch in tqdm(train_dataloader, desc="Caching latents"):
+    #         with torch.no_grad():
+    #             batch["pixel_values"] = batch["pixel_values"].to(accelerator.device, non_blocking=True, dtype=weight_dtype)
+    #             batch["input_ids"] = batch["input_ids"].to(accelerator.device, non_blocking=True)
+    #             latents_cache.append(vae.encode(batch["pixel_values"]).latent_dist)
+    #             if args.train_text_encoder:
+    #                 text_encoder_cache.append(batch["input_ids"])
+    #             else:
+    #                 text_encoder_cache.append(text_encoder(batch["input_ids"])[0])
+    #     del train_dataset
+    #     train_dataset = LatentsDataset(latents_cache, text_encoder_cache)
+    #     del train_dataloader
+    #     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1, collate_fn=lambda x: x, shuffle=True)
+
+    #     del vae
+    #     if not args.train_text_encoder:
+    #         del text_encoder
+    #     if torch.cuda.is_available():
+    #         torch.cuda.empty_cache()
+    #     return train_dataset, train_dataloader
 
 
 class DreamBoothDataSetFactory:
@@ -385,6 +424,12 @@ class DreamBoothDataSetFactory:
                 concept_class_tuples = [(x, concept["class_prompt"]) for x in Path(concept["class_data_dir"]).iterdir() if x.is_file()]
                 self.class_img_prompt_tuples.extend(concept_class_tuples[:num_class_images])
 
+        self.pairs = self._build_cross_product_pairs()
+        # print(self.pairs)
+
+        self.loss_dict = {pair: [0] for pair in self.pairs}
+        print(self.loss_dict)
+
     def create(self) -> DreamBoothDataset:
         return DreamBoothDataset(
             self.inst_img_prompt_tuples,
@@ -396,6 +441,13 @@ class DreamBoothDataSetFactory:
             self.pad_tokens,
             self.hflip
         )
+
+    def _build_cross_product_pairs(self) -> list[tuple[int, int]]:
+        result = [(instance_index, class_index)
+                  for instance_index in range(len(self.inst_img_prompt_tuples))
+                  for class_index in range(len(self.class_img_prompt_tuples))]
+
+        return result
 
 
 class PromptDataset(Dataset):
@@ -414,6 +466,8 @@ class PromptDataset(Dataset):
         example["index"] = index
         return example
 
+# import traceback
+
 
 class LatentsDataset(Dataset):
     def __init__(self, latents_cache, text_encoder_cache):
@@ -424,6 +478,7 @@ class LatentsDataset(Dataset):
         return len(self.latents_cache)
 
     def __getitem__(self, index):
+        # traceback.print_stack()
         return self.latents_cache[index], self.text_encoder_cache[index]
 
 
