@@ -324,17 +324,23 @@ class DreamBoothDataset(Dataset):
         return self._get_length()
 
     def __getitem__(self, index):
+        return self._internal_get_item(index,
+                                       self._get_random_class_image_index())
+
+    def add_loss_for_pair(self, pair: tuple[int, int], loss: float) -> Any:
+        pass
+
+    def _internal_get_item(self, instance_index, class_index) -> Any:
         data_set_item = {}
         instance_path, instance_prompt = \
-            self.inst_img_prompt_tuples[index % self.num_inst_images]
+            self.inst_img_prompt_tuples[instance_index % self.num_inst_images]
 
         data_set_item["instance_images"] = self._transform_image(instance_path)
         data_set_item["instance_prompt_ids"] = \
             self._get_input_ids_from_tokenizer(instance_prompt)
 
         if self.with_prior_preservation:
-            class_path, class_prompt = self.class_img_prompt_tuples[
-                self._get_random_class_image_index()]
+            class_path, class_prompt = self.class_img_prompt_tuples[class_index]
 
             data_set_item["class_images"] = self._transform_image(class_path)
             data_set_item["class_prompt_ids"] = \
@@ -342,7 +348,7 @@ class DreamBoothDataset(Dataset):
 
         return data_set_item
 
-    def _get_length(self):
+    def _get_length(self) -> int:
         return max(self.num_class_images, self.num_inst_images)
 
     def _transform_image(self, image_path: str) -> Any:
@@ -412,16 +418,22 @@ class SmartCrossProductDataSet(DreamBoothDataset):
                  loss_dict: dict[tuple[int, int], list[float]],
                  create_dataloader_fn,
                  *args):
+        super().__init__(*args)
         self.pairs = pairs
         self.loss_dict = loss_dict
-        self.create_dataloader_fn = create_dataloader_fn
-        super().__init__(*args)
+        self.internal_dataloader = create_dataloader_fn(self)
+        self.pair_index = 0
+        self.last_pair = (0, 0)
 
-    def __getitem__(self, index):
-        pass
+    def __getitem__(self, index) -> dict:
+        self.last_pair = self.pairs[self.pair_index]
+        self.pair_index += 1
 
-    def _get_length(self):
+    def _get_length(self) -> int:
         return self.num_inst_images
+
+    def add_loss_for_last_pair(self, loss: float) -> None:
+        self.loss_dict[self.last_pair].append(loss)
 
 
 class DreamBoothFactory:
