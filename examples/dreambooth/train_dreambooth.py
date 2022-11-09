@@ -8,7 +8,7 @@ import math
 import os
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -293,7 +293,6 @@ class DreamBoothDataset(Dataset):
         class_img_prompt_tuples,
         tokenizer,
         with_prior_preservation=True,
-
         resolution=512,
         center_crop=False,
         pad_tokens=False,
@@ -310,7 +309,6 @@ class DreamBoothDataset(Dataset):
 
         self.num_inst_images = len(self.inst_img_prompt_tuples)
         self.num_class_images = len(self.class_img_prompt_tuples)
-        self._length = max(self.num_class_images, self.num_inst_images)
 
         self.image_transformer = transforms.Compose(
             [
@@ -323,7 +321,7 @@ class DreamBoothDataset(Dataset):
         )
 
     def __len__(self):
-        return self._length
+        return self._get_length()
 
     def __getitem__(self, index):
         data_set_item = {}
@@ -343,6 +341,9 @@ class DreamBoothDataset(Dataset):
                 self._get_input_ids_from_tokenizer(class_prompt)
 
         return data_set_item
+
+    def _get_length(self):
+        return max(self.num_class_images, self.num_inst_images)
 
     def _transform_image(self, image_path: str) -> Any:
         transformer = self.image_transformer
@@ -409,31 +410,40 @@ class SmartCrossProductDataSet(DreamBoothDataset):
     def __init__(self,
                  pairs: list[tuple[int, int]],
                  loss_dict: dict[tuple[int, int], list[float]],
+                 create_dataloader_fn,
                  *args):
         self.pairs = pairs
         self.loss_dict = loss_dict
+        self.create_dataloader_fn = create_dataloader_fn
         super().__init__(*args)
 
     def __getitem__(self, index):
         pass
 
+    def _get_length(self):
+        return self.num_inst_images
 
-class DreamBoothDataSetFactory:
+
+class DreamBoothFactory:
     def __init__(
         self,
-        use_smart_cross_products,
+        collate_fn,
         concepts_list,
         tokenizer,
         with_prior_preservation,
+        use_smart_cross_products,
         resolution,
+        train_batch_size,
         center_crop,
         num_class_images,
         pad_tokens,
         hflip
     ) -> None:
+        self.collate_fn = collate_fn
         self.with_prior_preservation = with_prior_preservation
         self.tokenizer = tokenizer
         self.resolution = resolution
+        self.train_batch_size = train_batch_size
         self.center_crop = center_crop
         self.inst_img_prompt_tuples = []
         self.class_img_prompt_tuples = []
@@ -449,7 +459,7 @@ class DreamBoothDataSetFactory:
                 concept_class_tuples = [(x, concept["class_prompt"]) for x in Path(concept["class_data_dir"]).iterdir() if x.is_file()]
                 self.class_img_prompt_tuples.extend(concept_class_tuples[:num_class_images])
 
-    def create(self) -> DreamBoothDataset:
+    def create_dataset(self) -> DreamBoothDataset:
         args = \
             [
                 self.inst_img_prompt_tuples,
@@ -464,9 +474,24 @@ class DreamBoothDataSetFactory:
         if self.use_smart_cross_products:
             pairs = self._build_cross_product_pairs()
             loss_dict = {pair: [0] for pair in self.pairs}
-            return SmartCrossProductDataSet(pairs, loss_dict, *args)
+            return SmartCrossProductDataSet(pairs,
+                                            loss_dict,
+                                            self.create_dataloader,
+                                            *args)
         else:
             return DreamBoothDataset(*args)
+
+    def create_dataloader(self, dataset: DreamBoothDataset = None) -> Any:
+        if dataset is None:
+            dataset = self.create_dataset()
+
+        dataloader = torch.utils.data.DataLoader(dataset,
+                                                 self.train_batch_size,
+                                                 shuffle=True,
+                                                 collate_fn=self.collate_fn,
+                                                 pin_memory=True
+                                                 )
+        return dataloader
 
     def _build_cross_product_pairs(self) -> list[tuple[int, int]]:
         result = [(instance_index, class_index)
@@ -532,17 +557,17 @@ def get_full_repo_name(model_id: str, organization: Optional[str] = None, token:
         return f"{organization}/{model_id}"
 
 
-def create_dataloader(dataset: DreamBoothDataset,
-                      train_batch_size: int,
-                      collate_fn: Callable[[list], dict[str, Any]]
-                      ) -> Any:
-    dataloader = torch.utils.data.DataLoader(dataset,
-                                             train_batch_size,
-                                             shuffle=True,
-                                             collate_fn=collate_fn,
-                                             pin_memory=True
-                                             )
-    return dataloader
+# def create_dataloader(dataset: DreamBoothDataset,
+#                       train_batch_size: int,
+#                       collate_fn: Callable[[list], dict[str, Any]]
+#                       ) -> Any:
+#     dataloader = torch.utils.data.DataLoader(dataset,
+#                                              train_batch_size,
+#                                              shuffle=True,
+#                                              collate_fn=collate_fn,
+#                                              pin_memory=True
+#                                              )
+#     return dataloader
 
 
 def main(args):
@@ -763,7 +788,7 @@ def main(args):
             torch.cuda.empty_cache()
         return train_dataset, train_dataloader
 
-    dataset_factory = DreamBoothDataSetFactory(
+    dreambooth_factory = DreamBoothFactory(
         concepts_list=args.concepts_list,
         tokenizer=tokenizer,
         with_prior_preservation=args.with_prior_preservation,
@@ -782,10 +807,11 @@ def main(args):
         text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     vae = create_vae(accelerator.device, weight_dtype)
-    train_dataset = dataset_factory.create()
-    train_dataloader = create_dataloader(dataset=train_dataset,
-                                         train_batch_size=args.train_batch_size,
-                                         collate_fn=collate_fn)
+    train_dataset = dreambooth_factory.create_dataset()
+    train_dataloader = dreambooth_factory.create_dataloader(
+        dataset=train_dataset,
+        train_batch_size=args.train_batch_size,
+        collate_fn=collate_fn)
 
     if not args.not_cache_latents:
         train_dataset, train_dataloader = cache_latents(train_dataset,
@@ -907,11 +933,12 @@ def main(args):
                 vae = create_vae(accelerator.device, weight_dtype)
             del train_dataset
             del train_dataloader
-            train_dataset = dataset_factory.create()
-            train_dataloader = create_dataloader(train_dataset,
-                                                 train_batch_size=args.train_batch_size,
-                                                 collate_fn=collate_fn
-                                                 )
+            train_dataset = dreambooth_factory.create_dataset()
+            train_dataloader = dreambooth_factory.create_dataloader(train_dataset)
+            # ,
+            #                                      train_batch_size=args.train_batch_size,
+            #                                      collate_fn=collate_fn
+            #                                      )
             train_dataset, train_dataloader = cache_latents(train_dataset,
                                                             train_dataloader,
                                                             vae)
