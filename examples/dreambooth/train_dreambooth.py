@@ -319,39 +319,21 @@ class DreamBoothDataset(Dataset):
     def __len__(self):
         return self._length
 
-    def _get_random_class_image_index(self):
-        if len(self.class_images_randomizer_stack) == 0:
-            self.class_images_randomizer_stack = [x for x in range(self.num_class_images)]
-
-        random_index = random.randint(
-            0,
-            len(self.class_images_randomizer_stack) - 1)
-        result = self.class_images_randomizer_stack.pop(random_index)
-        return result
-
     def __getitem__(self, index):
         data_set_item = {}
         instance_path, instance_prompt = self.inst_img_prompt_tuples[index % self.num_inst_images]
 
         data_set_item["instance_images"] = self._transform_image(instance_path)
-        data_set_item["instance_prompt_ids"] = self.tokenizer(
-            instance_prompt,
-            padding="max_length" if self.pad_tokens else "do_not_pad",
-            truncation=True,
-            max_length=self.tokenizer.model_max_length,
-        ).input_ids
+        data_set_item["instance_prompt_ids"] = \
+            self._get_input_ids_from_tokenizer(instance_prompt)
 
         if self.with_prior_preservation:
             class_path, class_prompt = self.class_img_prompt_tuples[
                 self._get_random_class_image_index()]
 
             data_set_item["class_images"] = self._transform_image(class_path)
-            data_set_item["class_prompt_ids"] = self.tokenizer(
-                class_prompt,
-                padding="max_length" if self.pad_tokens else "do_not_pad",
-                truncation=True,
-                max_length=self.tokenizer.model_max_length,
-            ).input_ids
+            data_set_item["class_prompt_ids"] = \
+                self._get_input_ids_from_tokenizer(class_prompt)
 
         return data_set_item
 
@@ -364,6 +346,27 @@ class DreamBoothDataset(Dataset):
 
         result = transformer(img)
         img.close()
+
+        return result
+
+    def _get_input_ids_from_tokenizer(self, prompt: str) -> Any:
+        return self.tokenizer(
+            prompt,
+            padding="max_length" if self.pad_tokens else "do_not_pad",
+            truncation=True,
+            max_length=self.tokenizer.model_max_length,
+        ).input_ids
+
+    def _get_random_class_image_index(self) -> int:
+        if len(self.class_images_randomizer_stack) == 0:
+            self.class_images_randomizer_stack = \
+                [x for x in range(self.num_class_images)]
+
+        random_index = random.randint(
+            0,
+            len(self.class_images_randomizer_stack) - 1)
+
+        result = self.class_images_randomizer_stack.pop(random_index)
 
         return result
 
