@@ -330,7 +330,7 @@ class DreamBoothDataset(Dataset):
     def add_loss_for_pair(self, pair: tuple[int, int], loss: float) -> Any:
         pass
 
-    def _internal_get_item(self, instance_index, class_index) -> Any:
+    def _internal_get_item(self, instance_index: int, class_index: int) -> Any:
         data_set_item = {}
         instance_path, instance_prompt = \
             self.inst_img_prompt_tuples[instance_index % self.num_inst_images]
@@ -428,6 +428,7 @@ class SmartCrossProductDataSet(DreamBoothDataset):
     def __getitem__(self, index) -> dict:
         self.last_pair = self.pairs[self.pair_index]
         self.pair_index += 1
+        return self._internal_get_item(*self.last_pair)
 
     def _get_length(self) -> int:
         return self.num_inst_images
