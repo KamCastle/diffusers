@@ -417,21 +417,72 @@ class SmartCrossProductDataSet(DreamBoothDataset):
                  pairs: list[tuple[int, int]],
                  loss_dict: dict[tuple[int, int], list[float]],
                  create_dataloader_fn,
+                 accelerator,
+                 weight_dtype,
+                 vae,
                  *args):
         super().__init__(*args)
         self.pairs = pairs
         self.loss_dict = loss_dict
-        self.internal_dataloader = create_dataloader_fn(self)
+        self.accelerator = accelerator
+        self.weight_dtype = weight_dtype
+        self.vae = vae
+        self._internal_dataloader = create_dataloader_fn(self)
+        self._cache = []
+        self._rebuilding_cache = False
+        self.text_encoder_cache = []
         self.pair_index = 0
         self.last_pair = (0, 0)
 
     def __getitem__(self, index) -> dict:
+        if self._rebuilding_cache:
+            return super()._internal_get_item(*self.pairs[self.pair_index + index])
+
         self.last_pair = self.pairs[self.pair_index]
         self.pair_index += 1
         return self._internal_get_item(*self.last_pair)
 
     def _get_length(self) -> int:
         return self.num_inst_images
+
+    def _internal_get_item(self, instance_index: int, class_index: int) -> Any:
+        if len(self._cache) > 0:
+            latent, text_enc_cache = self._cache.pop(0)
+            return latent, text_enc_cache
+        else:
+            self._rebuilding_cache = True
+            for batch in tqdm(self._internal_dataloader, desc="Caching latents"):
+                with torch.no_grad():
+                    batch["pixel_values"] = \
+                        batch["pixel_values"].to(
+                            self.accelerator.device,
+                            non_blocking=True,
+                            dtype=self.weight_dtype)
+                    batch["input_ids"] = \
+                        batch["input_ids"].to(
+                            self.accelerator.device,
+                            non_blocking=True)
+                    latent = (self.vae.encode(batch["pixel_values"]).latent_dist)
+                    if args.train_text_encoder:
+                        text_encoder_cache.append(batch["input_ids"])
+                    else:
+                        text_encoder_cache.append(text_encoder(batch["input_ids"])[0])
+            
+            pairs_to_be_cached = self.pairs[self.pair_index - 1:
+                                            self.pair_index + self.num_inst_images - 1]
+
+            for pair in pairs_to_be_cached:
+                pass
+
+            self._rebuilding_cache = False
+            latent, text_enc_cache = self._cache.pop(0)
+            return latent, text_enc_cache
+
+            print(pairs_to_be_cached)
+            print(f'len pairs_to_be_cached {pairs_to_be_cached}')
+
+    def _cache_latents(self, pairs: list) -> dict:
+        pass
 
     def add_loss_for_last_pair(self, loss: float) -> None:
         self.loss_dict[self.last_pair].append(loss)
@@ -443,6 +494,9 @@ class DreamBoothFactory:
         collate_fn,
         concepts_list,
         tokenizer,
+        vae,
+        accelerator,
+        weight_dtype,
         with_prior_preservation,
         use_smart_cross_products,
         resolution,
@@ -454,6 +508,9 @@ class DreamBoothFactory:
     ) -> None:
         self.collate_fn = collate_fn
         self.with_prior_preservation = with_prior_preservation
+        self.vae = vae,
+        self.accelerator = accelerator
+        self.weight_type = weight_dtype
         self.tokenizer = tokenizer
         self.resolution = resolution
         self.train_batch_size = train_batch_size
@@ -484,12 +541,16 @@ class DreamBoothFactory:
                 self.pad_tokens,
                 self.hflip
             ]
+
         if self.use_smart_cross_products:
             self.pairs = self._build_cross_product_pairs()
             self.loss_dict = {pair: [0] for pair in self.pairs}
             return SmartCrossProductDataSet(self.pairs,
                                             self.loss_dict,
                                             self.create_dataloader,
+                                            self.accelerator,
+                                            self.weight_dtype,
+                                            self.vae,
                                             *args)
         else:
             return DreamBoothDataset(*args)
@@ -568,19 +629,6 @@ def get_full_repo_name(model_id: str, organization: Optional[str] = None, token:
         return f"{username}/{model_id}"
     else:
         return f"{organization}/{model_id}"
-
-
-# def create_dataloader(dataset: DreamBoothDataset,
-#                       train_batch_size: int,
-#                       collate_fn: Callable[[list], dict[str, Any]]
-#                       ) -> Any:
-#     dataloader = torch.utils.data.DataLoader(dataset,
-#                                              train_batch_size,
-#                                              shuffle=True,
-#                                              collate_fn=collate_fn,
-#                                              pin_memory=True
-#                                              )
-#     return dataloader
 
 
 def main(args):
@@ -801,10 +849,22 @@ def main(args):
             torch.cuda.empty_cache()
         return train_dataset, train_dataloader
 
+    # Move text_encode and vae to gpu (for vae it happens in create_vae).
+    # For mixed precision training we cast the text_encoder and vae weights to half-precision
+    # as these models are only used for inference, keeping weights in full precision is not required.
+
+    if not args.train_text_encoder:
+        text_encoder.to(accelerator.device, dtype=weight_dtype)
+
+    vae = create_vae(accelerator.device, weight_dtype)
+
     dreambooth_factory = DreamBoothFactory(
         collate_fn=collate_fn,
         concepts_list=args.concepts_list,
         tokenizer=tokenizer,
+        accelerator=accelerator,
+        weight_type=weight_dtype,
+        vae=vae,
         with_prior_preservation=args.with_prior_preservation,
         use_smart_cross_products=args.use_smart_cross_products,
         resolution=args.resolution,
@@ -815,19 +875,11 @@ def main(args):
         hflip=args.hflip
     )
 
-    # Move text_encode and vae to gpu (for vae it happens in create_vae).
-    # For mixed precision training we cast the text_encoder and vae weights to half-precision
-    # as these models are only used for inference, keeping weights in full precision is not required.
-
-    if not args.train_text_encoder:
-        text_encoder.to(accelerator.device, dtype=weight_dtype)
-
-    vae = create_vae(accelerator.device, weight_dtype)
     train_dataset = dreambooth_factory.create_dataset()
     train_dataloader = dreambooth_factory.create_dataloader(
         dataset=train_dataset)
 
-    if not args.not_cache_latents:
+    if not args.not_cache_latents and not args.use_smart_cross_products:
         train_dataset, train_dataloader = cache_latents(train_dataset,
                                                         train_dataloader,
                                                         vae)
