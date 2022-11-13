@@ -485,10 +485,10 @@ class DreamBoothFactory:
                 self.hflip
             ]
         if self.use_smart_cross_products:
-            pairs = self._build_cross_product_pairs()
-            loss_dict = {pair: [0] for pair in self.pairs}
-            return SmartCrossProductDataSet(pairs,
-                                            loss_dict,
+            self.pairs = self._build_cross_product_pairs()
+            self.loss_dict = {pair: [0] for pair in self.pairs}
+            return SmartCrossProductDataSet(self.pairs,
+                                            self.loss_dict,
                                             self.create_dataloader,
                                             *args)
         else:
@@ -802,10 +802,13 @@ def main(args):
         return train_dataset, train_dataloader
 
     dreambooth_factory = DreamBoothFactory(
+        collate_fn=collate_fn,
         concepts_list=args.concepts_list,
         tokenizer=tokenizer,
         with_prior_preservation=args.with_prior_preservation,
+        use_smart_cross_products=args.use_smart_cross_products,
         resolution=args.resolution,
+        train_batch_size=args.train_batch_size,
         center_crop=args.center_crop,
         num_class_images=args.num_class_images,
         pad_tokens=args.pad_tokens,
@@ -822,9 +825,7 @@ def main(args):
     vae = create_vae(accelerator.device, weight_dtype)
     train_dataset = dreambooth_factory.create_dataset()
     train_dataloader = dreambooth_factory.create_dataloader(
-        dataset=train_dataset,
-        train_batch_size=args.train_batch_size,
-        collate_fn=collate_fn)
+        dataset=train_dataset)
 
     if not args.not_cache_latents:
         train_dataset, train_dataloader = cache_latents(train_dataset,
