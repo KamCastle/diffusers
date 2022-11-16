@@ -299,10 +299,12 @@ class DreamBoothDataset(Dataset):
         hflip=False
     ):
         self.center_crop = center_crop
+        self.resolution = resolution
         self.tokenizer = tokenizer
         self.with_prior_preservation = with_prior_preservation
         self.pad_tokens = pad_tokens
 
+        # print(len(inst_img_prompt_tuples))
         self.inst_img_prompt_tuples = inst_img_prompt_tuples
         self.class_img_prompt_tuples = class_img_prompt_tuples
         self.class_images_randomizer_stack = []
@@ -313,8 +315,8 @@ class DreamBoothDataset(Dataset):
         self.image_transformer = transforms.Compose(
             [
                 transforms.RandomHorizontalFlip(0.5 * hflip),
-                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(resolution) if center_crop else transforms.RandomCrop(resolution),
+                transforms.Resize(self.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(self.resolution) if self.center_crop else transforms.RandomCrop(resolution),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
             ]
@@ -324,7 +326,7 @@ class DreamBoothDataset(Dataset):
         return self._get_length()
 
     def __getitem__(self, index):
-        print('getitem of DreamBoothDataset')
+        # print('getitem of DreamBoothDataset')
         return self._internal_get_item(index,
                                        self._get_random_class_image_index())
 
@@ -332,7 +334,7 @@ class DreamBoothDataset(Dataset):
         pass
 
     def _internal_get_item(self, instance_index: int, class_index: int) -> Any:
-        print('_internal_get_item of DreamBoothDataset')
+        # print('_internal_get_item of DreamBoothDataset')
         data_set_item = {}
         instance_path, instance_prompt = \
             self.inst_img_prompt_tuples[instance_index]  # % self.num_inst_images]
@@ -347,20 +349,17 @@ class DreamBoothDataset(Dataset):
             data_set_item["class_images"] = self._transform_image(class_path)
             data_set_item["class_prompt_ids"] = \
                 self._get_input_ids_from_tokenizer(class_prompt)
-        print(data_set_item)
         return data_set_item
 
     def _get_length(self) -> int:
         return max(self.num_class_images, self.num_inst_images)
 
     def _transform_image(self, image_path: str) -> Any:
-        transformer = self.image_transformer
-
         img = Image.open(image_path)
         if not img.mode == 'RGB':
             img = img.convert('RGB')
 
-        result = transformer(img)
+        result = self.image_transformer(img)
         img.close()
 
         return result
@@ -431,8 +430,9 @@ class SmartCrossProductDataSet(DreamBoothDataset):
         self.text_encoder = text_encoder
         self.weight_dtype = weight_dtype
         self.vae = vae
-        print(type(vae))
-        self._internal_dataloader = create_dataloader_fn(self)
+        # print(type(vae))
+        self._internal_dataloader = create_dataloader_fn(self,
+                                                         DataLoaderType.REGULAR)
         self._cache = []
         self._rebuilding_cache = False
         self.text_encoder_cache = []
@@ -440,7 +440,7 @@ class SmartCrossProductDataSet(DreamBoothDataset):
         self.last_pair = (0, 0)
 
     def __getitem__(self, index) -> dict:
-        print('getitem of SmartCrossProductDataSet')
+        # print('getitem of SmartCrossProductDataSet')
         if self._rebuilding_cache:
             return super()._internal_get_item(*self.pairs[self.pair_index + index])
 
@@ -452,7 +452,7 @@ class SmartCrossProductDataSet(DreamBoothDataset):
         return self.num_inst_images
 
     def _internal_get_item(self, instance_index: int, class_index: int) -> Any:
-        print('_internal_get_item of SmartCrossProductDataSet')
+        #  print('_internal_get_item of SmartCrossProductDataSet')
         if len(self._cache) > 0:
             latent, text_enc_cache = self._cache.pop(0)
             return latent, text_enc_cache
@@ -473,8 +473,9 @@ class SmartCrossProductDataSet(DreamBoothDataset):
                     # if not args.train_text_encoder:
                         # self.text_encoder_cache.append(batch["input_ids"])
                     # else:
-                    text_enc_cache = self.text_encoder(batch["input_ids"])[0]
-                    self._cache.append((latent, text_enc_cache))
+                    text_enc_cache = batch["input_ids"]
+                    # text_enc_cache = self.text_encoder(batch["input_ids"])[0]
+                self._cache.append((latent, text_enc_cache))
             # pairs_to_be_cached = self.pairs[self.pair_index - 1:
             #                                 self.pair_index + self.num_inst_images - 1]
 
@@ -493,6 +494,11 @@ class SmartCrossProductDataSet(DreamBoothDataset):
 
     def add_loss_for_last_pair(self, loss: float) -> None:
         self.loss_dict[self.last_pair].append(loss)
+
+
+class DataLoaderType(Enum):
+    CACHED_LATENTS = auto()
+    REGULAR = auto()
 
 
 class DreamBoothFactory:
@@ -514,7 +520,7 @@ class DreamBoothFactory:
         pad_tokens,
         hflip
     ) -> None:
-        print('Building DreamBoothFactory')
+        # print('Building DreamBoothFactory')
         self.collate_fn = collate_fn
         self.with_prior_preservation = with_prior_preservation
         self.vae = vae
@@ -553,7 +559,7 @@ class DreamBoothFactory:
             ]
 
         if self.use_smart_cross_products:
-            print('Creating SmartCrossProductDataSet')
+            # print('Creating SmartCrossProductDataSet')
             self.pairs = self._build_cross_product_pairs()
             self.loss_dict = {pair: [0] for pair in self.pairs}
             return SmartCrossProductDataSet(self.pairs,
@@ -567,17 +573,27 @@ class DreamBoothFactory:
         else:
             return DreamBoothDataset(*args)
 
-    def create_dataloader(self, dataset: DreamBoothDataset = None) -> Any:
-        print('creating data loader')
+    def create_dataloader(self,
+                          type: DataLoaderType,
+                          dataset: DreamBoothDataset = None
+                          ) -> Any:
+        # print('creating data loader')
         if dataset is None:
             dataset = self.create_dataset()
+        if type == DataLoaderType.REGULAR:
+            dataloader = torch.utils.data.DataLoader(dataset,
+                                                     self.train_batch_size,
+                                                     shuffle=True,
+                                                     collate_fn=self.collate_fn,
+                                                     pin_memory=True
+                                                     )
+        else:
+            dataloader = torch.utils.data.DataLoader(dataset,
+                                                     batch_size=1,
+                                                     shuffle=True,
+                                                     collate_fn=lambda x: x,
+                                                     )
 
-        dataloader = torch.utils.data.DataLoader(dataset,
-                                                 self.train_batch_size,
-                                                 shuffle=True,
-                                                 collate_fn=self.collate_fn,
-                                                 pin_memory=True
-                                                 )
         return dataloader
 
     def _build_cross_product_pairs(self) -> list[tuple[int, int]]:
@@ -870,7 +886,7 @@ def main(args):
         text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     vae = create_vae(accelerator.device, weight_dtype)
-    print(f'type of vae {type(vae)}')
+    # print(f'type of vae {type(vae)}')
     dreambooth_factory = DreamBoothFactory(
         collate_fn=collate_fn,
         concepts_list=args.concepts_list,
@@ -891,6 +907,7 @@ def main(args):
 
     train_dataset = dreambooth_factory.create_dataset()
     train_dataloader = dreambooth_factory.create_dataloader(
+        type=DataLoaderType.CACHED_LATENTS,
         dataset=train_dataset)
 
     if not args.not_cache_latents and not args.use_smart_cross_products:
