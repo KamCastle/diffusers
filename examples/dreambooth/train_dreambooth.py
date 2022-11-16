@@ -298,6 +298,7 @@ class DreamBoothDataset(Dataset):
         pad_tokens=False,
         hflip=False
     ):
+        self.loss_dict = dict()
         self.center_crop = center_crop
         self.resolution = resolution
         self.tokenizer = tokenizer
@@ -330,10 +331,11 @@ class DreamBoothDataset(Dataset):
         return self._internal_get_item(index,
                                        self._get_random_class_image_index())
 
-    def add_loss_for_pair(self, pair: tuple[int, int], loss: float) -> Any:
+    def add_loss_for_last_pair(self, loss: float) -> None:
         pass
 
     def _internal_get_item(self, instance_index: int, class_index: int) -> Any:
+        print(f'dreamboothdataset_internal_getitem_ {instance_index}, {class_index}')
         # print('_internal_get_item of DreamBoothDataset')
         data_set_item = {}
         instance_path, instance_prompt = \
@@ -431,8 +433,10 @@ class SmartCrossProductDataSet(DreamBoothDataset):
         self.weight_dtype = weight_dtype
         self.vae = vae
         # print(type(vae))
-        self._internal_dataloader = create_dataloader_fn(self,
-                                                         DataLoaderType.REGULAR)
+        self._internal_dataloader = \
+            create_dataloader_fn(type=DataLoaderType.REGULAR,
+                                 dataset=self
+                                 )
         self._cache = []
         self._rebuilding_cache = False
         self.text_encoder_cache = []
@@ -444,8 +448,7 @@ class SmartCrossProductDataSet(DreamBoothDataset):
         if self._rebuilding_cache:
             return super()._internal_get_item(*self.pairs[self.pair_index + index])
 
-        self.last_pair = self.pairs[self.pair_index]
-        self.pair_index += 1
+        print(f'last pair {self.last_pair}')
         return self._internal_get_item(*self.last_pair)
 
     def _get_length(self) -> int:
@@ -454,11 +457,13 @@ class SmartCrossProductDataSet(DreamBoothDataset):
     def _internal_get_item(self, instance_index: int, class_index: int) -> Any:
         #  print('_internal_get_item of SmartCrossProductDataSet')
         if len(self._cache) > 0:
+            self.last_pair = self.pairs[self.pair_index]
+            self.pair_index += 1
             latent, text_enc_cache = self._cache.pop(0)
             return latent, text_enc_cache
         else:
             self._rebuilding_cache = True
-            for batch in tqdm(self._internal_dataloader, desc="rebuilding cache"):
+            for batch in tqdm(self._internal_dataloader, desc="Rebuilding cache..."):
                 with torch.no_grad():
                     batch["pixel_values"] = \
                         batch["pixel_values"].to(
@@ -580,17 +585,18 @@ class DreamBoothFactory:
         # print('creating data loader')
         if dataset is None:
             dataset = self.create_dataset()
+
         if type == DataLoaderType.REGULAR:
             dataloader = torch.utils.data.DataLoader(dataset,
                                                      self.train_batch_size,
-                                                     shuffle=True,
+                                                     shuffle=False,
                                                      collate_fn=self.collate_fn,
                                                      pin_memory=True
                                                      )
         else:
             dataloader = torch.utils.data.DataLoader(dataset,
                                                      batch_size=1,
-                                                     shuffle=True,
+                                                     shuffle=False,
                                                      collate_fn=lambda x: x,
                                                      )
 
@@ -1025,20 +1031,20 @@ def main(args):
         if args.train_text_encoder:
             text_encoder.train()
 
-        if args.shuffle_after_epoch and (global_step >= number_of_examples):
-            if vae is None:
-                vae = create_vae(accelerator.device, weight_dtype)
-            del train_dataset
-            del train_dataloader
-            train_dataset = dreambooth_factory.create_dataset()
-            train_dataloader = dreambooth_factory.create_dataloader(train_dataset)
-            # ,
-            #                                      train_batch_size=args.train_batch_size,
-            #                                      collate_fn=collate_fn
-            #                                      )
-            train_dataset, train_dataloader = cache_latents(train_dataset,
-                                                            train_dataloader,
-                                                            vae)
+        # if args.shuffle_after_epoch and (global_step >= number_of_examples):
+        #     if vae is None:
+        #         vae = create_vae(accelerator.device, weight_dtype)
+        #     del train_dataset
+        #     del train_dataloader
+        #     train_dataset = dreambooth_factory.create_dataset()
+        #     train_dataloader = dreambooth_factory.create_dataloader(train_dataset)
+        #     # ,
+        #     #                                      train_batch_size=args.train_batch_size,
+        #     #                                      collate_fn=collate_fn
+        #     #                                      )
+        #     train_dataset, train_dataloader = cache_latents(train_dataset,
+        #                                                     train_dataloader,
+        #                                                     vae)
 
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
@@ -1117,8 +1123,14 @@ def main(args):
             if global_step >= args.max_train_steps:
                 break
 
+            train_dataset.add_loss_for_last_pair(loss.item() * bsz)
+
         accelerator.wait_for_everyone()
 
+    print(train_dataset.loss_dict)
+    list_sorted = sorted(train_dataset.loss_dict, key=train_dataset.loss_dict.get, reverse=True)[:5]
+    print('----------------------------------------------------')
+    print(list_sorted)
     save_weights(global_step)
 
     accelerator.end_training()
