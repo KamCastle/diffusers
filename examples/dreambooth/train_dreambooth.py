@@ -324,6 +324,7 @@ class DreamBoothDataset(Dataset):
         return self._get_length()
 
     def __getitem__(self, index):
+        print('getitem of DreamBoothDataset')
         return self._internal_get_item(index,
                                        self._get_random_class_image_index())
 
@@ -331,9 +332,10 @@ class DreamBoothDataset(Dataset):
         pass
 
     def _internal_get_item(self, instance_index: int, class_index: int) -> Any:
+        print('_internal_get_item of DreamBoothDataset')
         data_set_item = {}
         instance_path, instance_prompt = \
-            self.inst_img_prompt_tuples[instance_index % self.num_inst_images]
+            self.inst_img_prompt_tuples[instance_index]  # % self.num_inst_images]
 
         data_set_item["instance_images"] = self._transform_image(instance_path)
         data_set_item["instance_prompt_ids"] = \
@@ -345,7 +347,7 @@ class DreamBoothDataset(Dataset):
             data_set_item["class_images"] = self._transform_image(class_path)
             data_set_item["class_prompt_ids"] = \
                 self._get_input_ids_from_tokenizer(class_prompt)
-
+        print(data_set_item)
         return data_set_item
 
     def _get_length(self) -> int:
@@ -418,6 +420,7 @@ class SmartCrossProductDataSet(DreamBoothDataset):
                  loss_dict: dict[tuple[int, int], list[float]],
                  create_dataloader_fn,
                  accelerator,
+                 text_encoder,
                  weight_dtype,
                  vae,
                  *args):
@@ -425,8 +428,10 @@ class SmartCrossProductDataSet(DreamBoothDataset):
         self.pairs = pairs
         self.loss_dict = loss_dict
         self.accelerator = accelerator
+        self.text_encoder = text_encoder
         self.weight_dtype = weight_dtype
         self.vae = vae
+        print(type(vae))
         self._internal_dataloader = create_dataloader_fn(self)
         self._cache = []
         self._rebuilding_cache = False
@@ -435,6 +440,7 @@ class SmartCrossProductDataSet(DreamBoothDataset):
         self.last_pair = (0, 0)
 
     def __getitem__(self, index) -> dict:
+        print('getitem of SmartCrossProductDataSet')
         if self._rebuilding_cache:
             return super()._internal_get_item(*self.pairs[self.pair_index + index])
 
@@ -446,12 +452,13 @@ class SmartCrossProductDataSet(DreamBoothDataset):
         return self.num_inst_images
 
     def _internal_get_item(self, instance_index: int, class_index: int) -> Any:
+        print('_internal_get_item of SmartCrossProductDataSet')
         if len(self._cache) > 0:
             latent, text_enc_cache = self._cache.pop(0)
             return latent, text_enc_cache
         else:
             self._rebuilding_cache = True
-            for batch in tqdm(self._internal_dataloader, desc="Caching latents"):
+            for batch in tqdm(self._internal_dataloader, desc="rebuilding cache"):
                 with torch.no_grad():
                     batch["pixel_values"] = \
                         batch["pixel_values"].to(
@@ -462,24 +469,24 @@ class SmartCrossProductDataSet(DreamBoothDataset):
                         batch["input_ids"].to(
                             self.accelerator.device,
                             non_blocking=True)
-                    latent = (self.vae.encode(batch["pixel_values"]).latent_dist)
-                    if args.train_text_encoder:
-                        text_encoder_cache.append(batch["input_ids"])
-                    else:
-                        text_encoder_cache.append(text_encoder(batch["input_ids"])[0])
-            
-            pairs_to_be_cached = self.pairs[self.pair_index - 1:
-                                            self.pair_index + self.num_inst_images - 1]
+                    latent = self.vae.encode(batch["pixel_values"]).latent_dist
+                    # if not args.train_text_encoder:
+                        # self.text_encoder_cache.append(batch["input_ids"])
+                    # else:
+                    text_enc_cache = self.text_encoder(batch["input_ids"])[0]
+                    self._cache.append((latent, text_enc_cache))
+            # pairs_to_be_cached = self.pairs[self.pair_index - 1:
+            #                                 self.pair_index + self.num_inst_images - 1]
 
-            for pair in pairs_to_be_cached:
-                pass
+            # for pair in pairs_to_be_cached:
+            #     pass
 
             self._rebuilding_cache = False
             latent, text_enc_cache = self._cache.pop(0)
             return latent, text_enc_cache
 
-            print(pairs_to_be_cached)
-            print(f'len pairs_to_be_cached {pairs_to_be_cached}')
+            # print(pairs_to_be_cached)
+            # print(f'len pairs_to_be_cached {pairs_to_be_cached}')
 
     def _cache_latents(self, pairs: list) -> dict:
         pass
@@ -496,6 +503,7 @@ class DreamBoothFactory:
         tokenizer,
         vae,
         accelerator,
+        text_encoder,
         weight_dtype,
         with_prior_preservation,
         use_smart_cross_products,
@@ -506,11 +514,13 @@ class DreamBoothFactory:
         pad_tokens,
         hflip
     ) -> None:
+        print('Building DreamBoothFactory')
         self.collate_fn = collate_fn
         self.with_prior_preservation = with_prior_preservation
-        self.vae = vae,
+        self.vae = vae
         self.accelerator = accelerator
-        self.weight_type = weight_dtype
+        self.text_encoder = text_encoder
+        self.weight_dtype = weight_dtype
         self.tokenizer = tokenizer
         self.resolution = resolution
         self.train_batch_size = train_batch_size
@@ -543,12 +553,14 @@ class DreamBoothFactory:
             ]
 
         if self.use_smart_cross_products:
+            print('Creating SmartCrossProductDataSet')
             self.pairs = self._build_cross_product_pairs()
             self.loss_dict = {pair: [0] for pair in self.pairs}
             return SmartCrossProductDataSet(self.pairs,
                                             self.loss_dict,
                                             self.create_dataloader,
                                             self.accelerator,
+                                            self.text_encoder,
                                             self.weight_dtype,
                                             self.vae,
                                             *args)
@@ -556,6 +568,7 @@ class DreamBoothFactory:
             return DreamBoothDataset(*args)
 
     def create_dataloader(self, dataset: DreamBoothDataset = None) -> Any:
+        print('creating data loader')
         if dataset is None:
             dataset = self.create_dataset()
 
@@ -857,13 +870,14 @@ def main(args):
         text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     vae = create_vae(accelerator.device, weight_dtype)
-
+    print(f'type of vae {type(vae)}')
     dreambooth_factory = DreamBoothFactory(
         collate_fn=collate_fn,
         concepts_list=args.concepts_list,
         tokenizer=tokenizer,
         accelerator=accelerator,
-        weight_type=weight_dtype,
+        text_encoder=text_encoder,
+        weight_dtype=weight_dtype,
         vae=vae,
         with_prior_preservation=args.with_prior_preservation,
         use_smart_cross_products=args.use_smart_cross_products,
