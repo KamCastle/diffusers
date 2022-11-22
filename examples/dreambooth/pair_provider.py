@@ -13,7 +13,7 @@ class PairProvider:
         self._retrain_percentage = retrain_percentage
 
         self._pairs = self._build_cross_product_pairs()
-        self._last_pair = (0, 0)
+        self._last_pair = TrainingPair(0, 0)
         self._last_pair_index = 0
 
     def get_next_pair(self) -> TrainingPair:
@@ -36,6 +36,9 @@ class PairProvider:
             retrain_pairs = pairs_ordered_by_loss_desc[0:num_retrain_pairs]
             self._pairs[
                 self._last_pair_index:self._last_pair_index] = retrain_pairs
+
+    def get_all_pairs(self):
+        return self._pairs
 
     def _build_cross_product_pairs(self) -> list[TrainingPair]:
         result = [TrainingPair(instance_index, class_index)
