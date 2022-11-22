@@ -26,6 +26,8 @@ from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 
+from shared import TrainingPair
+
 
 torch.backends.cudnn.benchmark = True
 
@@ -437,32 +439,59 @@ class SmartCrossProductDataSet(DreamBoothDataset):
             create_dataloader_fn(type=DataLoaderType.REGULAR,
                                  dataset=self
                                  )
-        self._cache = []
+        self._cache = dict()
         self._rebuilding_cache = False
         self.text_encoder_cache = []
         self.pair_index = 0
         self.last_pair = (0, 0)
+        self.highest_loss_pairs = []
+        self.cache_pairs = []
 
     def __getitem__(self, index) -> dict:
         # print('getitem of SmartCrossProductDataSet')
         if self._rebuilding_cache:
-            return super()._internal_get_item(*self.pairs[self.pair_index + index])
+            if index <= self.num_class_images / 2 and self.pair_index > 0:
+                print('now recaching highest loss pairs')
+                self.cache_pairs.append(self.highest_loss_pairs[index])
+                return super()._internal_get_item(*self.highest_loss_pairs[index])
+            else:
+                self.cache_pairs.append(self.pairs[self.pair_index + index])
+                return super()._internal_get_item(*self.pairs[self.pair_index + index])
 
-        print(f'last pair {self.last_pair}')
+
+        # print(f'last pair {self.last_pair}')
         return self._internal_get_item(*self.last_pair)
 
     def _get_length(self) -> int:
         return self.num_inst_images
 
     def _internal_get_item(self, instance_index: int, class_index: int) -> Any:
-        #  print('_internal_get_item of SmartCrossProductDataSet')
+        print('_internal_get_item of SmartCrossProductDataSet')
         if len(self._cache) > 0:
-            self.last_pair = self.pairs[self.pair_index]
-            self.pair_index += 1
-            latent, text_enc_cache = self._cache.pop(0)
+            print('cache not empty')
+            if len(self.highest_loss_pairs) > 0:
+                print(f'using {self.last_pair} from highest loss pairs as last pair')
+                self.last_pair = self.highest_loss_pairs.pop()
+            else:
+                self.last_pair = self.pairs[self.pair_index]
+                self.pair_index += 1
+
+            
+            pair_key = (instance_index, class_index)
+            print(f'pair_key {pair_key}')
+            print(self._cache.keys())
+            latent, text_enc_cache = self._cache[pair_key]
+            # del self._cache[pair_key]
             return latent, text_enc_cache
         else:
+            print('rebuild cache')
             self._rebuilding_cache = True
+            if self.pair_index > 0:
+                self.highest_loss_pairs = \
+                    sorted(self.loss_dict,
+                           key=self.loss_dict.get,
+                           reverse=True
+                           )[:round(self.num_inst_images / 2)]
             for batch in tqdm(self._internal_dataloader, desc="Rebuilding cache..."):
                 with torch.no_grad():
                     batch["pixel_values"] = \
@@ -480,15 +509,17 @@ class SmartCrossProductDataSet(DreamBoothDataset):
                     # else:
                     text_enc_cache = batch["input_ids"]
                     # text_enc_cache = self.text_encoder(batch["input_ids"])[0]
-                self._cache.append((latent, text_enc_cache))
+                self._cache[self.cache_pairs.pop(0)] = (latent, text_enc_cache)
             # pairs_to_be_cached = self.pairs[self.pair_index - 1:
             #                                 self.pair_index + self.num_inst_images - 1]
 
             # for pair in pairs_to_be_cached:
             #     pass
-
+            print(f'dict keys after caching {self._cache.keys()}')
             self._rebuilding_cache = False
-            latent, text_enc_cache = self._cache.pop(0)
+            pair_key = next(iter(self._cache))
+            latent, text_enc_cache = self._cache[pair_key]
+            # del self._cache[pair_key]
             return latent, text_enc_cache
 
             # print(pairs_to_be_cached)
@@ -602,8 +633,8 @@ class DreamBoothFactory:
 
         return dataloader
 
-    def _build_cross_product_pairs(self) -> list[tuple[int, int]]:
-        result = [(instance_index, class_index)
+    def _build_cross_product_pairs(self) -> list[TrainingPair]:
+        result = [TrainingPair(instance_index, class_index)
                   for instance_index in range(len(self.inst_img_prompt_tuples))
                   for class_index in range(len(self.class_img_prompt_tuples))]
 
