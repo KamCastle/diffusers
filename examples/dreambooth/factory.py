@@ -3,10 +3,12 @@ from typing import Any
 import torch
 from datasets import DreamBoothDataset, \
     SmartCrossProductDataSet, LossMeter, DataLoaderType
+from examples.dreambooth.parsers import ConceptsListParser
+from shared import TrainingObject
 from shared import TrainingPair
 
 
-class DreamBoothFactory:
+class DreamBoothFactory(TrainingObject):
     def __init__(
         self,
         collate_fn,
@@ -42,13 +44,9 @@ class DreamBoothFactory:
         self.hflip = hflip
         self.use_smart_cross_products = use_smart_cross_products
 
-        for concept in concepts_list:
-            concept_inst_tuples = [(x, concept["instance_prompt"]) for x in Path(concept["instance_data_dir"]).iterdir() if x.is_file()]
-            self.inst_img_prompt_tuples.extend(concept_inst_tuples)
-
-            if with_prior_preservation:
-                concept_class_tuples = [(x, concept["class_prompt"]) for x in Path(concept["class_data_dir"]).iterdir() if x.is_file()]
-                self.class_img_prompt_tuples.extend(concept_class_tuples[:num_class_images])
+        clp = ConceptsListParser()
+        self.inst_img_prompt_tuples, self.class_img_prompt_tuples = \
+            clp.parse(concepts_list, num_class_images, with_prior_preservation)
 
     def create_dataset(self) -> DreamBoothDataset:
         args = \

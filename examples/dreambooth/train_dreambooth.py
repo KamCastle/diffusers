@@ -2,7 +2,6 @@ import argparse
 from enum import Enum, auto
 import hashlib
 import itertools
-import random
 import json
 import math
 import os
@@ -23,7 +22,12 @@ from huggingface_hub import HfFolder, Repository, whoami
 
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
-from examples.dreambooth.loss_meter import LossMeter
+from datasets import DreamBoothDataset, LatentsDataset, PromptDataset
+from examples.dreambooth.pair_provider import PairProvider
+from examples.dreambooth.shared import TrainingObject
+from factory import DreamBoothFactory
+from loss_meter import LossMeter
+from shared import DataLoaderType
 
 from shared import TrainingPair
 
@@ -282,18 +286,6 @@ class ImageType(Enum):
     INSTANCE = auto()
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 class AverageMeter:
     def __init__(self, name=None):
         self.name = name
@@ -545,6 +537,8 @@ def main(args):
 
     vae = create_vae(accelerator.device, weight_dtype)
     # print(f'type of vae {type(vae)}')
+    TrainingObject.cmdline_args = args
+
     dreambooth_factory = DreamBoothFactory(
         collate_fn=collate_fn,
         concepts_list=args.concepts_list,
@@ -562,6 +556,8 @@ def main(args):
         pad_tokens=args.pad_tokens,
         hflip=args.hflip
     )
+
+    pair_provider = PairProvider()
 
     train_dataset = dreambooth_factory.create_dataset()
     train_dataloader = dreambooth_factory.create_dataloader(

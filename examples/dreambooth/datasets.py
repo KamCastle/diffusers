@@ -5,10 +5,14 @@ import torch
 from torchvision import transforms
 from torch.utils.data import Dataset
 from tqdm.auto import tqdm
+from examples.dreambooth.shared import TrainingObject
+
+from pair_provider import PairProvider
+from loss_meter import LossMeter
 from shared import TrainingPair, DataLoaderType
 
 
-class DreamBoothDataset(Dataset):
+class DreamBoothDataset(Dataset, TrainingObject):
     """
     A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
     It pre-processes the images and the tokenizer prompts.
@@ -18,19 +22,10 @@ class DreamBoothDataset(Dataset):
         self,
         inst_img_prompt_tuples,
         class_img_prompt_tuples,
-        tokenizer,
-        with_prior_preservation=True,
-        resolution=512,
-        center_crop=False,
-        pad_tokens=False,
-        hflip=False
+        tokenizer
     ):
         self.loss_dict = dict()
-        self.center_crop = center_crop
-        self.resolution = resolution
         self.tokenizer = tokenizer
-        self.with_prior_preservation = with_prior_preservation
-        self.pad_tokens = pad_tokens
 
         # print(len(inst_img_prompt_tuples))
         self.inst_img_prompt_tuples = inst_img_prompt_tuples
@@ -42,9 +37,13 @@ class DreamBoothDataset(Dataset):
 
         self.image_transformer = transforms.Compose(
             [
-                transforms.RandomHorizontalFlip(0.5 * hflip),
-                transforms.Resize(self.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(self.resolution) if self.center_crop else transforms.RandomCrop(resolution),
+                transforms.RandomHorizontalFlip(0.5 * self.cmdline_args.hflip),
+                (transforms.Resize(
+                    self.cmdline_args.resolution,
+                    interpolation=transforms.InterpolationMode.BILINEAR)),
+                (transforms.CenterCrop(self.cmdline_args.resolution)
+                    if self.cmdline_args.center_crop
+                    else transforms.RandomCrop(self.cmdline_args.resolution)),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
             ]
@@ -58,9 +57,6 @@ class DreamBoothDataset(Dataset):
         return self._internal_get_item(index,
                                        self._get_random_class_image_index())
 
-    def add_loss_for_last_pair(self, loss: float) -> None:
-        pass
-
     def _internal_get_item(self, instance_index: int, class_index: int) -> Any:
         print(f'dreamboothdataset_internal_getitem_ {instance_index}, {class_index}')
         # print('_internal_get_item of DreamBoothDataset')
@@ -72,12 +68,13 @@ class DreamBoothDataset(Dataset):
         data_set_item["instance_prompt_ids"] = \
             self._get_input_ids_from_tokenizer(instance_prompt)
 
-        if self.with_prior_preservation:
+        if self.cmdline_args.with_prior_preservation:
             class_path, class_prompt = self.class_img_prompt_tuples[class_index]
 
             data_set_item["class_images"] = self._transform_image(class_path)
             data_set_item["class_prompt_ids"] = \
                 self._get_input_ids_from_tokenizer(class_prompt)
+
         return data_set_item
 
     def _get_length(self) -> int:
@@ -96,7 +93,9 @@ class DreamBoothDataset(Dataset):
     def _get_input_ids_from_tokenizer(self, prompt: str) -> Any:
         return self.tokenizer(
             prompt,
-            padding="max_length" if self.pad_tokens else "do_not_pad",
+            padding=("max_length"
+                     if self.cmdline_args.pad_tokens
+                     else "do_not_pad"),
             truncation=True,
             max_length=self.tokenizer.model_max_length,
         ).input_ids
@@ -144,8 +143,10 @@ class DreamBoothDataset(Dataset):
 
 class SmartCrossProductDataSet(DreamBoothDataset):
     def __init__(self,
-                 pairs: list[TrainingPair],
-                 loss_dict: dict[tuple[int, int], list[float]],
+                 pair_provider: PairProvider,
+                #  pairs: list[TrainingPair],
+                 loss_meter: LossMeter,
+                #  loss_dict: dict[tuple[int, int], list[float]],
                  create_dataloader_fn,
                  accelerator,
                  text_encoder,
@@ -153,8 +154,10 @@ class SmartCrossProductDataSet(DreamBoothDataset):
                  vae,
                  *args):
         super().__init__(*args)
-        self.pairs = pairs
-        self.loss_dict = loss_dict
+        self.pair_provider = pair_provider
+        # self.pairs = pairs
+        self.loss_meter = loss_meter
+        # self.loss_dict = loss_dict
         self.accelerator = accelerator
         self.text_encoder = text_encoder
         self.weight_dtype = weight_dtype
@@ -167,8 +170,8 @@ class SmartCrossProductDataSet(DreamBoothDataset):
         self._cache = dict()
         self._rebuilding_cache = False
         self.text_encoder_cache = []
-        self.pair_index = 0
-        self.last_pair = (0, 0)
+        # self.pair_index = 0
+        # self.last_pair = (0, 0)
         self.highest_loss_pairs = []
         self.cache_pairs = []
 
@@ -182,7 +185,6 @@ class SmartCrossProductDataSet(DreamBoothDataset):
             else:
                 self.cache_pairs.append(self.pairs[self.pair_index + index])
                 return super()._internal_get_item(*self.pairs[self.pair_index + index])
-
 
         # print(f'last pair {self.last_pair}')
         return self._internal_get_item(*self.last_pair)
@@ -201,7 +203,7 @@ class SmartCrossProductDataSet(DreamBoothDataset):
                 self.last_pair = self.pairs[self.pair_index]
                 self.pair_index += 1
 
-            pair_key = (instance_index, class_index)
+            pair_key = TrainingPair(instance_index, class_index)
             print(f'pair_key {pair_key}')
             print(self._cache.keys())
             latent, text_enc_cache = self._cache[pair_key]
@@ -255,6 +257,7 @@ class SmartCrossProductDataSet(DreamBoothDataset):
     def add_loss_for_last_pair(self, loss: float) -> None:
         self.loss_dict[self.last_pair].append(loss)
 
+
 class PromptDataset(Dataset):
     "A simple dataset to prepare the prompts to generate class images on multiple GPUs."
 
@@ -270,8 +273,6 @@ class PromptDataset(Dataset):
         example["prompt"] = self.prompt
         example["index"] = index
         return example
-
-# import traceback
 
 
 class LatentsDataset(Dataset):

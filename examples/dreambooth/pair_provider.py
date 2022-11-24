@@ -19,6 +19,9 @@ class PairProvider:
     def get_next_pair(self) -> TrainingPair:
         pass
 
+    def get_last_pair(self) -> TrainingPair:
+        return self._pairs[self._last_pair_index]
+
     def get_pairs_for_caching(
             self,
             pairs_ordered_by_loss_desc: list[TrainingPair]

@@ -10,7 +10,7 @@ class LossMeter(UserDict):
         self[pair].append(loss)
 
     def get_pairs_with_highest_losses(self,
-                                      num_pairs=0) -> list[TrainingPair]:
+                                      num_pairs=10) -> list[TrainingPair]:
         if num_pairs == 0:
             num_pairs = 10
 
