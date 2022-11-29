@@ -14,8 +14,9 @@ from shared import TrainingPair, DataLoaderType
 
 class DreamBoothDataset(Dataset, TrainingObject):
     """
-    A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
-    It pre-processes the images and the tokenizer prompts.
+    A dataset to prepare the instance and class images with the prompts for
+    fine-tuning the model. It pre-processes the images and the tokenizer
+    prompts.
     """
 
     def __init__(
@@ -144,9 +145,9 @@ class DreamBoothDataset(Dataset, TrainingObject):
 class SmartCrossProductDataSet(DreamBoothDataset):
     def __init__(self,
                  pair_provider: PairProvider,
-                #  pairs: list[TrainingPair],
+                 #  pairs: list[TrainingPair],
                  loss_meter: LossMeter,
-                #  loss_dict: dict[tuple[int, int], list[float]],
+                 #  loss_dict: dict[tuple[int, int], list[float]],
                  create_dataloader_fn,
                  accelerator,
                  text_encoder,

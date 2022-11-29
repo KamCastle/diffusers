@@ -17,7 +17,9 @@ class PairProvider:
         self._last_pair_index = 0
 
     def get_next_pair(self) -> TrainingPair:
-        pass
+        self._last_pair_index += 1
+
+        return self.get_last_pair()
 
     def get_last_pair(self) -> TrainingPair:
         return self._pairs[self._last_pair_index]
@@ -30,15 +32,15 @@ class PairProvider:
         list_start = self._last_pair_index
         list_end = self._last_pair_index + self._num_instance_imgs
 
-        if len(pairs_ordered_by_loss_desc) == 0:
-            return self._pairs[list_start:list_end]
-        else:
+        if len(pairs_ordered_by_loss_desc) > 0:
             num_retrain_pairs = \
                 self._get_number_of_retrain_pairs(pairs_ordered_by_loss_desc)
 
             retrain_pairs = pairs_ordered_by_loss_desc[0:num_retrain_pairs]
             self._pairs[
-                self._last_pair_index:self._last_pair_index] = retrain_pairs
+                list_start:list_start] = retrain_pairs
+
+        return self._pairs[list_start:list_end]
 
     def get_all_pairs(self):
         return self._pairs
@@ -54,7 +56,7 @@ class PairProvider:
             self,
             trained_pairs: list[TrainingPair]
     ) -> int:
-        if self.retrain_percentage == 0:
+        if self._retrain_percentage == 0:
             return 0
         else:
             return round(len(trained_pairs) / 100 * self._retrain_percentage)

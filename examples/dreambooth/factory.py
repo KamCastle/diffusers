@@ -3,6 +3,7 @@ from typing import Any
 import torch
 from datasets import DreamBoothDataset, \
     SmartCrossProductDataSet, LossMeter, DataLoaderType
+from examples.dreambooth.pair_provider import PairProvider
 from examples.dreambooth.parsers import ConceptsListParser
 from shared import TrainingObject
 from shared import TrainingPair
@@ -11,6 +12,7 @@ from shared import TrainingPair
 class DreamBoothFactory(TrainingObject):
     def __init__(
         self,
+        pair_provider: PairProvider,
         collate_fn,
         concepts_list,
         tokenizer,
@@ -28,6 +30,7 @@ class DreamBoothFactory(TrainingObject):
         hflip
     ) -> None:
         # print('Building DreamBoothFactory')
+        self.pair_provider = pair_provider
         self.collate_fn = collate_fn
         self.with_prior_preservation = with_prior_preservation
         self.vae = vae
@@ -49,7 +52,7 @@ class DreamBoothFactory(TrainingObject):
             clp.parse(concepts_list, num_class_images, with_prior_preservation)
 
     def create_dataset(self) -> DreamBoothDataset:
-        args = \
+        dataset_args = \
             [
                 self.inst_img_prompt_tuples,
                 self.class_img_prompt_tuples,
@@ -63,18 +66,18 @@ class DreamBoothFactory(TrainingObject):
 
         if self.use_smart_cross_products:
             # print('Creating SmartCrossProductDataSet')
-            self.pairs = self._build_cross_product_pairs()
-            self.loss_dict = LossMeter({pair: [0] for pair in self.pairs})
-            return SmartCrossProductDataSet(self.pairs,
-                                            self.loss_dict,
+            self.loss_meter = LossMeter(
+                {pair: [0] for pair in self.pair_provider.get_all_pairs()})
+            return SmartCrossProductDataSet(self.pair_provider,
+                                            self.loss_meter,
                                             self.create_dataloader,
                                             self.accelerator,
                                             self.text_encoder,
                                             self.weight_dtype,
                                             self.vae,
-                                            *args)
+                                            *dataset_args)
         else:
-            return DreamBoothDataset(*args)
+            return DreamBoothDataset(*dataset_args)
 
     def create_dataloader(self,
                           type: DataLoaderType,

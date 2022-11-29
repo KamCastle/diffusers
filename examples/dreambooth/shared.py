@@ -4,7 +4,12 @@ from typing import Any
 
 
 class TrainingObject:
-    cmdline_args: Any
+    args: Any
+
+
+class ImageType(Enum):
+    CLASS = auto()
+    INSTANCE = auto()
 
 
 TrainingPair = namedtuple("TrainingPair",
