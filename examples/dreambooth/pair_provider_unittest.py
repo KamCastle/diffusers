@@ -7,6 +7,12 @@ HIGHEST_LOSS_PAIRS = [TrainingPair(2, 2),
                       TrainingPair(2, 3),
                       TrainingPair(1, 4)]
 
+LOSS_PAIRS = [TrainingPair(2, 2),
+              TrainingPair(2, 3),
+              TrainingPair(1, 4),
+              TrainingPair(7, 22),
+              TrainingPair(13, 11)]
+
 ONE_INST_ONE_CLASS_0_PCT_RETRAIN = (1, 1, 0)
 EXPECTED_PAIR_1_1_0 = TrainingPair(0, 0)
 EXPECTED_PAIRS_1_1_0 = [EXPECTED_PAIR_1_1_0]
@@ -24,9 +30,19 @@ EXPECTED_PAIRS_3_3_30 = [TrainingPair(2, 2),
 
 THREE_INST_THREE_CLASS_100_PCT_RETRAIN = (3, 3, 100)
 TWENTY_INST_200_CLASS_10_PCT_RETRAIN = (20, 200, 10)
+TWENTY_INST_200_CLASS_100_PCT_RETRAIN = (20, 200, 100)
 
 LAST_PAIR_INDEX_1000 = 1000
 EXPECTED_LAST_PAIR_INDEX_1000_20_INST_200_CLASS = TrainingPair(5, 0)
+
+
+class TestPairProviderGetPairsForCaching(unittest.TestCase):
+    def test_last_index_near_to_number_of_pairs(self):
+        pp = PairProvider(*TWENTY_INST_200_CLASS_100_PCT_RETRAIN)
+        pp._last_pair_index = 3998
+        len_pairs = len(pp.get_pairs_for_caching(LOSS_PAIRS))
+        expected_len = 7
+        self.assertEqual(len_pairs, expected_len)
 
 
 class TestPairProvider(unittest.TestCase):
@@ -83,7 +99,6 @@ class TestPairProvider(unittest.TestCase):
 
         self.assertEqual(EXPECTED_LAST_PAIR_INDEX_1000_20_INST_200_CLASS,
                          last_pair)
-
 
 
 if __name__ == '__main__':

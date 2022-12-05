@@ -12,9 +12,7 @@ class PairProvider:
         self._num_class_imgs = num_class_imgs
         self._retrain_percentage = retrain_percentage
 
-        self._pairs = self._build_cross_product_pairs()
-        self._last_pair = TrainingPair(0, 0)
-        self._last_pair_index = 0
+        self._internal_init()
 
     def get_next_pair(self) -> TrainingPair:
         self._last_pair_index += 1
@@ -40,10 +38,17 @@ class PairProvider:
             self._pairs[
                 list_start:list_start] = retrain_pairs
 
-        return self._pairs[list_start:list_end]
+        result = self._pairs[list_start:list_end]
+        if (list_end >= len(self._pairs)) or (list_start >= (len(self._pairs))):
+            self._internal_init()
+
+        return result
 
     def get_all_pairs(self):
         return self._pairs
+
+    def get_loss_dict(self):
+        return {pair: [0] for pair in self._pairs}
 
     def _build_cross_product_pairs(self) -> list[TrainingPair]:
         result = [TrainingPair(instance_index, class_index)
@@ -60,3 +65,7 @@ class PairProvider:
             return 0
         else:
             return round(len(trained_pairs) / 100 * self._retrain_percentage)
+
+    def _internal_init(self):
+        self._pairs = self._build_cross_product_pairs()
+        self._last_pair_index = 0

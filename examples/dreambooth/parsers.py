@@ -250,11 +250,11 @@ class CmdLineParser:
         return args
 
 
-class ConceptsListParser:
+class ConceptsListParser():
     def parse(self,
               concepts_list: list,
               num_class_images: int,
-              with_prior_preservation=True
+              with_prior_preservation: bool
               ) -> ParsedConcepts:
         inst_img_prompt_tuples = []
         class_img_prompt_tuples = []

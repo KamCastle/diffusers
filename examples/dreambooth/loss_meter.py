@@ -27,6 +27,10 @@ c = TrainingPair(3, 3)
 
 l = [a, b, c]
 
-lm = LossMeter({pair: 0 for pair in l})
+lm = LossMeter({pair: [0] for pair in l})
+lm.add_loss_for_pair(a, 0.2)
+lm.add_loss_for_pair(b, 0.1)
+lm.add_loss_for_pair(b, 0.1)
 lm.add_loss_for_pair(TrainingPair(5, 5), 0.1)
-print(lm.data)
+
+print(lm.get_pairs_with_highest_losses(2))

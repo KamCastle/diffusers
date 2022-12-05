@@ -5,7 +5,7 @@ import torch
 from torchvision import transforms
 from torch.utils.data import Dataset
 from tqdm.auto import tqdm
-from examples.dreambooth.shared import TrainingObject
+from shared import TrainingObject
 
 from pair_provider import PairProvider
 from loss_meter import LossMeter
@@ -38,13 +38,13 @@ class DreamBoothDataset(Dataset, TrainingObject):
 
         self.image_transformer = transforms.Compose(
             [
-                transforms.RandomHorizontalFlip(0.5 * self.cmdline_args.hflip),
+                transforms.RandomHorizontalFlip(0.5 * self.args.hflip),
                 (transforms.Resize(
-                    self.cmdline_args.resolution,
+                    self.args.resolution,
                     interpolation=transforms.InterpolationMode.BILINEAR)),
-                (transforms.CenterCrop(self.cmdline_args.resolution)
-                    if self.cmdline_args.center_crop
-                    else transforms.RandomCrop(self.cmdline_args.resolution)),
+                (transforms.CenterCrop(self.args.resolution)
+                    if self.args.center_crop
+                    else transforms.RandomCrop(self.args.resolution)),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
             ]
@@ -69,7 +69,7 @@ class DreamBoothDataset(Dataset, TrainingObject):
         data_set_item["instance_prompt_ids"] = \
             self._get_input_ids_from_tokenizer(instance_prompt)
 
-        if self.cmdline_args.with_prior_preservation:
+        if self.args.with_prior_preservation:
             class_path, class_prompt = self.class_img_prompt_tuples[class_index]
 
             data_set_item["class_images"] = self._transform_image(class_path)
@@ -95,7 +95,7 @@ class DreamBoothDataset(Dataset, TrainingObject):
         return self.tokenizer(
             prompt,
             padding=("max_length"
-                     if self.cmdline_args.pad_tokens
+                     if self.args.pad_tokens
                      else "do_not_pad"),
             truncation=True,
             max_length=self.tokenizer.model_max_length,

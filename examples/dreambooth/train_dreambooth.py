@@ -288,26 +288,23 @@ def main(args):
     vae = create_vae(accelerator.device, weight_dtype)
     # print(f'type of vae {type(vae)}')
     TrainingObject.args = args
+    instance_images_path = list(Path(args.instance_data_dir).iterdir())
+    num_instance_images = len(instance_images_path)
+    pp = PairProvider(num_instance_images,
+                      args.num_class_images,
+                      args.retrain_pct)
+    lm = LossMeter(pp.get_loss_dict())
 
     dreambooth_factory = DreamBoothFactory(
+        pair_provider=pp,
+        loss_meter=lm,
         collate_fn=collate_fn,
-        concepts_list=args.concepts_list,
         tokenizer=tokenizer,
-        accelerator=accelerator,
         text_encoder=text_encoder,
         weight_dtype=weight_dtype,
         vae=vae,
-        with_prior_preservation=args.with_prior_preservation,
-        use_smart_cross_products=args.use_smart_cross_products,
-        resolution=args.resolution,
-        train_batch_size=args.train_batch_size,
-        center_crop=args.center_crop,
-        num_class_images=args.num_class_images,
-        pad_tokens=args.pad_tokens,
-        hflip=args.hflip
+        accelerator=accelerator
     )
-
-    pair_provider = PairProvider()
 
     train_dataset = dreambooth_factory.create_dataset()
     train_dataloader = dreambooth_factory.create_dataloader(
