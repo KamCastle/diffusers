@@ -3,6 +3,7 @@ import hashlib
 import itertools
 import random
 import json
+import logging
 import math
 import os
 from contextlib import nullcontext
@@ -19,6 +20,7 @@ from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from diffusers import AutoencoderKL, DDIMScheduler, DDPMScheduler, StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
+from diffusers.utils.import_utils import is_xformers_available
 from huggingface_hub import HfFolder, Repository, whoami
 from PIL import Image
 from torchvision import transforms
@@ -218,7 +220,7 @@ def parse_args(input_args=None):
         help="The name of the repository to keep in sync with the local `output_dir`.",
     )
     parser.add_argument(
-        "--logging_dir",
+        "--project_dir",
         type=str,
         default="logs",
         help=(
@@ -232,7 +234,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--mixed_precision",
         type=str,
-        default="no",
+        default="fp16",
         choices=["no", "fp16", "bf16"],
         help=(
             "Whether to use mixed precision. Choose"
@@ -433,13 +435,19 @@ def get_full_repo_name(model_id: str, organization: Optional[str] = None, token:
 
 
 def main(args):
-    logging_dir = Path(args.output_dir, "0", args.logging_dir)
+    project_dir = Path(args.output_dir, "0", args.project_dir)
 
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with="tensorboard",
-        logging_dir=logging_dir,
+        project_dir=project_dir,
+    )
+
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
     )
 
     # Currently, it's not possible to do gradient accumulation when training two models with accelerate.accumulate
@@ -487,6 +495,9 @@ def main(args):
                         safety_checker=None,
                         revision=args.revision
                     )
+                    pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
+                    if is_xformers_available():
+                        pipeline.enable_xformers_memory_efficient_attention()
                     pipeline.set_progress_bar_config(disable=True)
                     pipeline.to(accelerator.device)
 
@@ -532,31 +543,27 @@ def main(args):
         subfolder="text_encoder",
         revision=args.revision,
     )
+    vae = AutoencoderKL.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="vae",
+        revision=args.revision,
+    )
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="unet",
         revision=args.revision,
+        torch_dtype=torch.float32
     )
 
-    def create_vae(device, weight_dtype):
-        result = AutoencoderKL.from_pretrained(
-            args.pretrained_model_name_or_path,
-            subfolder="vae",
-            revision=args.revision,
-        )
-        result.requires_grad_(False)
-        result.to(device, dtype=weight_dtype)
-        return result
-
-    weight_dtype = torch.float32
-    if args.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif args.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
-
-    vae = create_vae(accelerator.device, weight_dtype)
+    vae.requires_grad_(False)
     if not args.train_text_encoder:
         text_encoder.requires_grad_(False)
+
+    if is_xformers_available():
+        vae.enable_xformers_memory_efficient_attention()
+        unet.enable_xformers_memory_efficient_attention()
+    else:
+        logger.warning("xformers is not available. Make sure it is installed correctly")
 
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
@@ -720,24 +727,27 @@ def main(args):
         # Create the pipeline using using the trained modules and save it.
         if accelerator.is_main_process:
             if args.train_text_encoder:
-                text_enc_model = accelerator.unwrap_model(text_encoder)
+                text_enc_model = accelerator.unwrap_model(text_encoder, keep_fp32_wrapper=True)
             else:
                 text_enc_model = CLIPTextModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision)
             scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", clip_sample=False, set_alpha_to_one=False)
             pipeline = StableDiffusionPipeline.from_pretrained(
                 args.pretrained_model_name_or_path,
-                unet=accelerator.unwrap_model(unet),
+                unet=accelerator.unwrap_model(unet, keep_fp32_wrapper=True),
                 text_encoder=text_enc_model,
                 vae=AutoencoderKL.from_pretrained(
                     args.pretrained_vae_name_or_path or args.pretrained_model_name_or_path,
                     subfolder=None if args.pretrained_vae_name_or_path else "vae",
-                    revision=None if args.pretrained_vae_name_or_path else args.revision
+                    revision=None if args.pretrained_vae_name_or_path else args.revision,
                 ),
                 safety_checker=None,
                 scheduler=scheduler,
                 torch_dtype=torch.float16,
                 revision=args.revision,
             )
+            pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
+            if is_xformers_available():
+                pipeline.enable_xformers_memory_efficient_attention()
             save_dir = os.path.join(args.output_dir, f"{step}")
             pipeline.save_pretrained(save_dir)
             with open(os.path.join(save_dir, "args.json"), "w") as f:
