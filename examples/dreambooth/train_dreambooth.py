@@ -19,6 +19,7 @@ from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from diffusers import AutoencoderKL, DDIMScheduler, DDPMScheduler, StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
+from diffusers.utils.import_utils import is_xformers_available
 from huggingface_hub import HfFolder, Repository, whoami
 from PIL import Image
 from torchvision import transforms
@@ -439,7 +440,7 @@ def main(args):
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with="tensorboard",
-        logging_dir=logging_dir,
+        project_dir=logging_dir,
     )
 
     # Currently, it's not possible to do gradient accumulation when training two models with accelerate.accumulate
@@ -487,6 +488,9 @@ def main(args):
                         safety_checker=None,
                         revision=args.revision
                     )
+                    pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
+                    if is_xformers_available():
+                        pipeline.enable_xformers_memory_efficient_attention()
                     pipeline.set_progress_bar_config(disable=True)
                     pipeline.to(accelerator.device)
 
@@ -557,6 +561,12 @@ def main(args):
     vae = create_vae(accelerator.device, weight_dtype)
     if not args.train_text_encoder:
         text_encoder.requires_grad_(False)
+
+    if is_xformers_available():
+        vae.enable_xformers_memory_efficient_attention()
+        unet.enable_xformers_memory_efficient_attention()
+    else:
+        logger.warning("xformers is not available. Make sure it is installed correctly")
 
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
